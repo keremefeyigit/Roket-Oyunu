@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:;">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>The Interceptor - Radar Simülasyonu</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #001122;
+            color: #0af;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none; /* Mobilde kaydırmayı engelle */
+        }
+        canvas {
+            border: 2px solid #0af;
+            box-shadow: 0 0 20px rgba(0, 170, 255, 0.3);
+            cursor: crosshair;
+            background-color: #001122;
+            width: 100%;
+            flex-grow: 1;
+            box-sizing: border-box;
+            display: none; /* Başlangıçta gizli */
+        }
+        #ui {
+            width: 100%;
+            max-width: 800px;
+            display: none; /* Başlangıçta gizli */
+            flex-wrap: wrap;
+            justify-content: space-between;
+            padding: 5px;
+            box-sizing: border-box;
+            text-shadow: 0 0 5px #0af;
+            gap: 5px;
+        }
+        .panel {
+            border: 1px solid #0af;
+            padding: 5px 10px;
+            background: rgba(0, 170, 255, 0.1);
+            flex: 1 1 45%;
+            text-align: center;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        
+        /* ANA MENÜ STİLLERİ */
+        #mainMenu {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 17, 34, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        
+        .menu-container {
+            border: 2px solid #0af;
+            box-shadow: 0 0 30px rgba(0, 170, 255, 0.5);
+            background: rgba(0, 170, 255, 0.05);
+            padding: 40px;
+            text-align: center;
+            max-width: 500px;
+            width: 90%;
+        }
+        
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px #0af;
+            letter-spacing: 2px;
+        }
+        
+        .subtitle {
+            font-size: 1.2em;
+            margin-bottom: 30px;
+            opacity: 0.8;
+        }
+        
+        .input-group {
+            margin-bottom: 25px;
+        }
+        
+        input[type="text"] {
+            background: rgba(0, 17, 34, 0.8);
+            border: 1px solid #0af;
+            color: #0af;
+            padding: 12px 20px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2em;
+            width: 80%;
+            text-align: center;
+            outline: none;
+            box-shadow: inset 0 0 10px rgba(0, 170, 255, 0.2);
+        }
+        
+        input[type="text"]:focus {
+            border-color: #fff;
+            box-shadow: inset 0 0 15px rgba(0, 170, 255, 0.5), 0 0 10px rgba(0, 170, 255, 0.5);
+        }
+        
+        .btn {
+            background: transparent;
+            border: 2px solid #0af;
+            color: #0af;
+            padding: 12px 25px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2em;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+        
+        .btn:hover {
+            background: #0af;
+            color: #001122;
+            box-shadow: 0 0 20px #0af;
+        }
+        
+        .btn:disabled {
+            border-color: #555;
+            color: #555;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        
+        .btn:disabled:hover {
+            background: transparent;
+            color: #555;
+        }
+        
+        /* NASIL OYNANIR PANELİ */
+        #howToPlayPanel {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 600px;
+            background-color: rgba(0, 17, 34, 0.95);
+            border: 2px solid #0af;
+            box-shadow: 0 0 30px rgba(0, 170, 255, 0.5);
+            padding: 30px;
+            z-index: 200;
+            text-align: left;
+        }
+        
+        .instruction-item {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+        }
+        
+        .instruction-icon {
+            font-size: 2em;
+            margin-right: 15px;
+            min-width: 40px;
+            text-align: center;
+        }
+        
+        .instruction-text h3 {
+            margin: 0 0 5px 0;
+            color: #fff;
+            text-shadow: 0 0 5px #0af;
+        }
+        
+        .instruction-text p {
+            margin: 0;
+            line-height: 1.4;
+            opacity: 0.9;
+        }
+        
+        .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            background: none;
+            border: none;
+            color: #0af;
+            font-size: 1.5em;
+            cursor: pointer;
+            font-family: monospace;
+        }
+        
+        .close-btn:hover {
+            color: #fff;
+            text-shadow: 0 0 10px #0af;
+        }
+
+        /* OYUN BİTTİ EKRANI */
+        #gameOverScreen {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 17, 34, 0.8);
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+
+        #gameOverTitle {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 15px #0af;
+        }
+
+        #finalScore {
+            font-size: 2em;
+            margin-bottom: 30px;
+        }
+
+        @media (max-width: 600px) {
+            .panel {
+                font-size: 12px;
+                padding: 3px 5px;
+            }
+            h1 { font-size: 1.8em; }
+            .btn { padding: 10px 15px; font-size: 1em; }
+            .instruction-item { flex-direction: column; }
+            .instruction-icon { margin-bottom: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- ANA MENÜ -->
+    <div id="mainMenu">
+        <div class="menu-container">
+            <h1>THE INTERCEPTOR</h1>
+            <div class="subtitle">RADAR SİMÜLASYONU</div>
+            
+            <div class="input-group">
+                <input type="text" id="playerNameInput" placeholder="PİLOT ADI GİRİNİZ" maxlength="15" autocomplete="off">
+            </div>
+            
+            <button class="btn" id="startBtn" disabled>OPERASYONA BAŞLA</button>
+            <button class="btn" id="howToPlayBtn">EĞİTİM (NASIL OYNANIR?)</button>
+            <button class="btn" id="highScoresBtn">EN YÜKSEK SKORLAR</button>
+        </div>
+    </div>
+
+    <!-- NASIL OYNANIR PANELİ -->
+    <div id="howToPlayPanel">
+        <button class="close-btn" id="closeHowToPlay">X</button>
+        <h2 style="text-align: center; margin-top: 0; border-bottom: 1px solid #0af; padding-bottom: 10px;">EĞİTİM MANUELİ</h2>
+        
+        <div class="instruction-item">
+            <div class="instruction-icon">🎯</div>
+            <div class="instruction-text">
+                <h3>Hedef Tahmini (Intercept)</h3>
+                <p>F-16'nın gelecekteki konumunu tahmin et. Doğrudan uçağa değil, uçağın gideceği noktaya nişan al!</p>
+            </div>
+        </div>
+        
+        <div class="instruction-item">
+            <div class="instruction-icon">🔄</div>
+            <div class="instruction-text">
+                <h3>Manevra Kabiliyeti</h3>
+                <p>Füzenin kısıtlı bir dönüş açısı vardır (45°/sn). Çok keskin dönmeye çalışırsan hız kaybedersin.</p>
+            </div>
+        </div>
+        
+        <div class="instruction-item">
+            <div class="instruction-icon">⛽</div>
+            <div class="instruction-text">
+                <h3>Enerji Yönetimi</h3>
+                <p>Motorun sınırlı süre çalışır. Yakıt bittiğinde füze süzülmeye başlar. Hızın, uçağın hızının altına düşerse avını kaçırırsın!</p>
+            </div>
+        </div>
+        
+        <div class="instruction-item">
+            <div class="instruction-icon">📡</div>
+            <div class="instruction-text">
+                <h3>Radar Takibi</h3>
+                <p>Sağ alttaki radarla hedefin konumunu takip et. Kırmızı nokta senin avın.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- OYUN BİTTİ EKRANI -->
+    <div id="gameOverScreen">
+        <div id="gameOverTitle">GÖREV BAŞARISIZ</div>
+        <div id="finalScore">SKOR: 0</div>
+        <button class="btn" id="restartBtn">YENİDEN DENE</button>
+        <button class="btn" id="menuBtn">ANA MENÜYE DÖN</button>
+    </div>
+
+    <!-- OYUN ARAYÜZÜ -->
+    <div id="ui">
+        <div class="panel" id="status">DURUM: SİSTEM AKTİF</div>
+        <div class="panel" id="speed">FÜZE HIZI: 0 MACH</div>
+        <div class="panel" id="boost">MOTOR: %100</div>
+        <div class="panel" id="score">SKOR: 0</div>
+    </div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    
+    <script src="game.js"></script>
+</body>
+</html>
