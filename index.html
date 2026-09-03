@@ -313,6 +313,911 @@
     </div>
     <canvas id="gameCanvas" width="800" height="600"></canvas>
     
-    <script src="game.js"></script>
+    <script>
+/**
+ * The Interceptor - Advanced Game Logic with Camera, World Space & Radar
+ */
+
+// --- GÖRSELLER (SVG Data URIs) ---
+const f16Svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M100 50 L70 58 L40 95 L25 95 L35 58 L10 58 L0 70 L0 30 L10 42 L35 42 L25 5 L40 5 L70 42 Z" fill="#4a5568" stroke="#00aaff" stroke-width="2"/></svg>`;
+const f16Img = new Image();
+f16Img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(f16Svg);
+
+const missileSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 20"><path d="M100 10 L80 0 L80 5 L20 5 L0 0 L0 20 L20 15 L80 15 L80 20 Z" fill="#e2e8f0" stroke="#ff0000" stroke-width="1"/></svg>`;
+const missileImg = new Image();
+missileImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(missileSvg);
+
+const s400Svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <rect x="10" y="60" width="80" height="20" fill="#2d3748" rx="5"/>
+    <circle cx="25" cy="85" r="8" fill="#1a202c"/>
+    <circle cx="45" cy="85" r="8" fill="#1a202c"/>
+    <circle cx="65" cy="85" r="8" fill="#1a202c"/>
+    <circle cx="85" cy="85" r="8" fill="#1a202c"/>
+    <rect x="70" y="45" width="20" height="15" fill="#4a5568" rx="3"/>
+    <rect x="20" y="10" width="15" height="50" fill="#4a5568" rx="2"/>
+    <rect x="40" y="10" width="15" height="50" fill="#4a5568" rx="2"/>
+</svg>`;
+const s400Img = new Image();
+s400Img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s400Svg);
+
+// --- YARDIMCI FONKSİYONLAR ---
+function normalizeAngle(angle) {
+    while (angle <= -Math.PI) angle += Math.PI * 2;
+    while (angle > Math.PI) angle -= Math.PI * 2;
+    return angle;
+}
+
+// --- SINIFLAR ---
+
+class Ucak {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.speed = 250; 
+        this.baseSpeed = 250;
+        this.angle = Math.random() * Math.PI * 2;
+        this.turnRate = (90 * Math.PI) / 180; // F-16 saniyede 90 derece dönebilir (9G)
+        this.history = []; 
+        
+        // Kaçış Manevrası Durumları
+        this.isEvading = false;
+        this.evasionTimer = 0;
+        this.evasionType = 'NONE'; // NONE, BREAK, WEAVE, DIVE
+        this.flareActive = false;
+        this.flareTimer = 0;
+    }
+
+    update(dt, fuze) {
+        let dx = fuze.x - this.x;
+        let dy = fuze.y - this.y;
+        let distToMissile = Math.sqrt(dx * dx + dy * dy);
+        
+        let desiredAngle = this.angle;
+        let currentTurnRate = this.turnRate;
+
+        // --- GERÇEKÇİ KAÇIŞ MANEVRALARI (EVASION TACTICS) ---
+        
+        // Flare (Sahte Hedef) Bırakma Süresi Kontrolü
+        if (this.flareActive) {
+            this.flareTimer -= dt;
+            if (this.flareTimer <= 0) this.flareActive = false;
+        }
+
+        // Manevra Zamanlayıcısı
+        if (this.isEvading) {
+            this.evasionTimer -= dt;
+            if (this.evasionTimer <= 0) {
+                this.isEvading = false;
+                this.evasionType = 'NONE';
+                this.speed = this.baseSpeed; // Hızı normale döndür
+            }
+        }
+
+        // Füze Tehdit Algılaması (RWR - Radar Warning Receiver)
+        // Füze 1500 birimden yakınsa ve aktifse, ve şu an bir manevra yapmıyorsa
+        if (distToMissile < 1500 && fuze.state === 'ACTIVE' && !this.isEvading) {
+            this.isEvading = true;
+            this.evasionTimer = 2.0 + Math.random() * 1.5; // 2-3.5 saniye süren manevralar
+            
+            // Füzenin geliş açısını hesapla
+            let angleToMissile = Math.atan2(dy, dx);
+            let relativeAngle = normalizeAngle(angleToMissile - this.angle);
+            
+            // Taktik Seçimi
+            let rand = Math.random();
+            if (distToMissile < 600) {
+                // Çok yakın tehdit: "Break Turn" (Sert Dönüş) + Flare
+                this.evasionType = 'BREAK';
+                this.flareActive = true;
+                this.flareTimer = 1.5; // 1.5 saniye radar paraziti
+                // Füzeye dik açı (90 derece) yapacak şekilde en sert dönüş
+                desiredAngle = angleToMissile + (relativeAngle > 0 ? -Math.PI/2 : Math.PI/2);
+                currentTurnRate = this.turnRate * 1.2; // G-Limitini zorla (Hız kaybedecek)
+                this.speed = this.baseSpeed * 0.8; // Sert dönüşte hız kaybı (Enerji yönetimi)
+            } 
+            else if (rand < 0.5) {
+                // Orta mesafe: "Weave / S-Turn" (S Çizme)
+                this.evasionType = 'WEAVE';
+                // Füzenin geliş yönünün tersine doğru zikzak
+                desiredAngle = this.angle + (Math.random() > 0.5 ? Math.PI/3 : -Math.PI/3);
+            } 
+            else {
+                // Uzak mesafe: "Dive / Extend" (Hızlanarak Kaçma)
+                this.evasionType = 'DIVE';
+                // Füzeden tam ters yöne kaç ve hızlan
+                desiredAngle = angleToMissile + Math.PI;
+                this.speed = this.baseSpeed * 1.3; // Afterburner (Artıcı) açtı
+                currentTurnRate = this.turnRate * 0.5; // Hızlıyken dönüş yarıçapı genişler
+            }
+        } 
+        else if (this.isEvading) {
+            // Manevra devam ediyorsa, seçilen taktiğe göre açıyı koru/güncelle
+            if (this.evasionType === 'WEAVE' && Math.random() < 0.05) {
+                // S-Turn sırasında rastgele yön değiştir
+                desiredAngle = this.angle + (Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2);
+            } else if (this.evasionType === 'BREAK') {
+                // Break turn sırasında füzeye dik kalmaya çalış
+                let angleToMissile = Math.atan2(dy, dx);
+                let relativeAngle = normalizeAngle(angleToMissile - this.angle);
+                desiredAngle = angleToMissile + (relativeAngle > 0 ? -Math.PI/2 : Math.PI/2);
+                currentTurnRate = this.turnRate * 1.2;
+            } else if (this.evasionType === 'DIVE') {
+                // Dive sırasında füzeden uzaklaşmaya devam et
+                let angleToMissile = Math.atan2(dy, dx);
+                desiredAngle = angleToMissile + Math.PI;
+                currentTurnRate = this.turnRate * 0.5;
+            }
+        }
+        else {
+            // Tehlike yoksa rastgele gezinme
+            if (Math.random() < 0.01) {
+                desiredAngle += (Math.random() - 0.5) * Math.PI;
+            }
+        }
+
+        // Dönüşü Uygula (Fiziksel Kısıtlar Dahilinde)
+        let angleDiff = normalizeAngle(desiredAngle - this.angle);
+        let maxTurn = currentTurnRate * dt;
+        this.angle += Math.max(-maxTurn, Math.min(maxTurn, angleDiff));
+
+        // Pozisyonu Güncelle
+        this.x += Math.cos(this.angle) * this.speed * dt;
+        this.y += Math.sin(this.angle) * this.speed * dt;
+
+        // Dünya sınırlarından sekme (10,000 x 10,000)
+        if (this.x < 0 || this.x > 10000) this.angle = Math.PI - this.angle;
+        if (this.y < 0 || this.y > 10000) this.angle = -this.angle;
+
+        // İz (trail) kaydı - Sadece son 1 saniyeyi (yaklaşık 60 kare) tut
+        this.history.push({x: this.x, y: this.y});
+        if (this.history.length > 60) {
+            this.history.shift();
+        }
+    }
+
+    draw(ctx, camera) {
+        // Görünmez İz (Trail) Çizimi
+        if (this.history.length > 1) {
+            ctx.beginPath();
+            ctx.moveTo(this.history[0].x - camera.x, this.history[0].y - camera.y);
+            for (let i = 1; i < this.history.length; i++) {
+                ctx.lineTo(this.history[i].x - camera.x, this.history[i].y - camera.y);
+            }
+            ctx.strokeStyle = "rgba(0, 170, 255, 0.3)";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        ctx.save();
+        ctx.translate(this.x - camera.x, this.y - camera.y);
+        ctx.rotate(this.angle);
+        ctx.drawImage(f16Img, -25, -25, 50, 50);
+        
+        // Flare Görseli (Eğer aktifse)
+        if (this.flareActive) {
+            for(let i=0; i<3; i++) {
+                ctx.beginPath();
+                ctx.arc(-30 - Math.random()*20, (Math.random()-0.5)*40, Math.random()*5+2, 0, Math.PI*2);
+                ctx.fillStyle = "rgba(255, 200, 0, 0.8)";
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+}
+
+class Fuze {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.angle = -Math.PI / 2; 
+        this.speed = 0; 
+        this.maxSpeed = 800; 
+        this.boostTime = 5.0; 
+        this.maxBoostTime = 5.0;
+        this.maxTurnRate = (45 * Math.PI) / 180; 
+        
+        this.targetX = x;
+        this.targetY = y - 100;
+        
+        this.state = 'ACTIVE'; 
+        this.distanceTraveled = 0;
+
+        // Fırlatma Animasyonu Değişkenleri
+        this.isLaunching = true;
+        this.launchTimer = 1.5; // 1.5 saniye dikey çıkış
+    }
+
+    update(dt, ucakHizi) {
+        if (this.state !== 'ACTIVE') return;
+
+        if (this.isLaunching) {
+            this.launchTimer -= dt;
+            this.speed += 600 * dt; // Hızla ivmelen
+            if (this.launchTimer <= 0) {
+                this.isLaunching = false;
+            }
+            // Sadece yukarı git
+            this.x += Math.cos(this.angle) * this.speed * dt;
+            this.y += Math.sin(this.angle) * this.speed * dt;
+            this.distanceTraveled += this.speed * dt;
+            return; // Normal takibi atla
+        }
+
+        let desiredAngle = Math.atan2(this.targetY - this.y, this.targetX - this.x);
+        let angleDiff = normalizeAngle(desiredAngle - this.angle);
+
+        let maxTurn = this.maxTurnRate * dt;
+        let actualTurn = Math.max(-maxTurn, Math.min(maxTurn, angleDiff));
+        this.angle += actualTurn;
+
+        let turnPenalty = Math.abs(actualTurn);
+        this.speed *= Math.cos(turnPenalty * 1.5); 
+
+        if (this.boostTime > 0) {
+            this.boostTime -= dt;
+            this.speed += 500 * dt; 
+            if (this.speed > this.maxSpeed) this.speed = this.maxSpeed;
+        } else {
+            this.speed -= 80 * dt; 
+        }
+
+        if (this.speed < ucakHizi * 0.8) { // Uçağın hızının %80'inin altına düşerse stall olur
+            this.state = 'MISSED';
+        }
+
+        let moveStep = this.speed * dt;
+        this.x += Math.cos(this.angle) * moveStep;
+        this.y += Math.sin(this.angle) * moveStep;
+        this.distanceTraveled += moveStep;
+    }
+
+    draw(ctx, camera) {
+        ctx.save();
+        ctx.translate(this.x - camera.x, this.y - camera.y);
+        ctx.rotate(this.angle);
+        
+        if (this.state === 'ACTIVE') {
+            ctx.drawImage(missileImg, -15, -5, 30, 10);
+        } else {
+            ctx.globalAlpha = 0.5;
+            ctx.drawImage(missileImg, -15, -5, 30, 10);
+            ctx.globalAlpha = 1.0;
+        }
+
+        if (this.boostTime > 0 && this.state === 'ACTIVE') {
+            ctx.beginPath();
+            ctx.moveTo(-15, 0);
+            ctx.lineTo(-30 - Math.random() * 20, 0);
+            ctx.strokeStyle = "#ff9900";
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        if (this.state === 'ACTIVE') {
+            ctx.beginPath();
+            ctx.arc(this.targetX - camera.x, this.targetY - camera.y, 5, 0, Math.PI * 2);
+            ctx.strokeStyle = "rgba(0, 170, 255, 0.5)";
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.setLineDash([5, 5]);
+            ctx.moveTo(this.x - camera.x, this.y - camera.y);
+            ctx.lineTo(this.targetX - camera.x, this.targetY - camera.y);
+            ctx.strokeStyle = "rgba(0, 170, 255, 0.2)";
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    }
+}
+
+class OyunMotoru {
+    constructor() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        
+        this.canvas.width = window.innerWidth;
+        this.canvas.height = window.innerHeight; 
+        
+        this.uiStatus = document.getElementById('status');
+        this.uiSpeed = document.getElementById('speed');
+        this.uiBoost = document.getElementById('boost');
+        this.uiScore = document.getElementById('score');
+        this.uiContainer = document.getElementById('ui');
+
+        // Menü Elementleri
+        this.mainMenu = document.getElementById('mainMenu');
+        this.playerNameInput = document.getElementById('playerNameInput');
+        this.startBtn = document.getElementById('startBtn');
+        this.howToPlayBtn = document.getElementById('howToPlayBtn');
+        this.highScoresBtn = document.getElementById('highScoresBtn');
+        this.howToPlayPanel = document.getElementById('howToPlayPanel');
+        this.closeHowToPlay = document.getElementById('closeHowToPlay');
+        
+        // Oyun Sonu Elementleri
+        this.gameOverScreen = document.getElementById('gameOverScreen');
+        this.gameOverTitle = document.getElementById('gameOverTitle');
+        this.finalScore = document.getElementById('finalScore');
+        this.restartBtn = document.getElementById('restartBtn');
+        this.menuBtn = document.getElementById('menuBtn');
+
+        this.worldSize = 10000;
+        this.camera = { x: 0, y: 0 };
+        this.playerName = "";
+        this.gameState = 'MENU'; // MENU, LAUNCHING, PLAYING, WON, LOST
+        
+        // Radar Değişkenleri
+        this.radarAngle = 0;
+
+        this.setupMenuEvents();
+        this.showLeaderboard();
+
+        // Hedef güncelleme yardımcı fonksiyonu
+        this.updateTarget = (clientX, clientY) => {
+            let rect = this.canvas.getBoundingClientRect();
+            if (this.fuze && this.fuze.state === 'ACTIVE') {
+                let scaleX = this.canvas.width / rect.width;
+                let scaleY = this.canvas.height / rect.height;
+                let x = (clientX - rect.left) * scaleX;
+                let y = (clientY - rect.top) * scaleY;
+                this.fuze.targetX = x + this.camera.x;
+                this.fuze.targetY = y + this.camera.y;
+            }
+        };
+
+        // Fare Kontrolleri
+        this.canvas.addEventListener('mousemove', (e) => {
+            if (this.gameState === 'PLAYING' || this.gameState === 'LAUNCHING') {
+                this.updateTarget(e.clientX, e.clientY);
+            }
+        });
+
+        this.canvas.addEventListener('click', () => {
+            if (this.gameState === 'WON' || this.gameState === 'LOST') {
+                this.showGameOverScreen(this.gameState === 'WON');
+            }
+        });
+
+        // Dokunmatik (Mobil) Kontroller
+        this.canvas.addEventListener('touchstart', (e) => {
+            if (this.gameState === 'PLAYING' || this.gameState === 'LAUNCHING') {
+                e.preventDefault(); // Kaydırmayı engelle
+                this.updateTarget(e.touches[0].clientX, e.touches[0].clientY);
+            } else if (this.gameState === 'WON' || this.gameState === 'LOST') {
+                this.showGameOverScreen(this.gameState === 'WON');
+            }
+        }, { passive: false });
+
+        this.canvas.addEventListener('touchmove', (e) => {
+            if (this.gameState === 'PLAYING' || this.gameState === 'LAUNCHING') {
+                e.preventDefault(); // Kaydırmayı engelle
+                this.updateTarget(e.touches[0].clientX, e.touches[0].clientY);
+            }
+        }, { passive: false });
+
+        // Ekran Boyutlandırma
+        this.resizeCanvas = () => {
+            let rect = this.canvas.getBoundingClientRect();
+            this.canvas.width = rect.width || window.innerWidth;
+            this.canvas.height = rect.height || window.innerHeight;
+        };
+
+        window.addEventListener('resize', () => {
+            this.resizeCanvas();
+        });
+        
+        // İlk boyutlandırma
+        setTimeout(() => this.resizeCanvas(), 0);
+
+        this.lastTime = performance.now();
+        requestAnimationFrame((t) => this.loop(t));
+    }
+
+    setupMenuEvents() {
+        // İsim girişi kontrolü
+        this.playerNameInput.addEventListener('input', (e) => {
+            this.playerName = e.target.value.trim();
+            this.startBtn.disabled = this.playerName.length === 0;
+        });
+
+        // Başla Butonu
+        this.startBtn.addEventListener('click', () => {
+            this.startGame();
+        });
+
+        // Enter tuşu ile başlama
+        this.playerNameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !this.startBtn.disabled) {
+                this.startGame();
+            }
+        });
+
+        // Nasıl Oynanır Paneli
+        this.howToPlayBtn.addEventListener('click', () => {
+            this.howToPlayPanel.style.display = 'block';
+        });
+
+        this.closeHowToPlay.addEventListener('click', () => {
+            this.howToPlayPanel.style.display = 'none';
+        });
+
+        // Skor Tablosu Göster/Gizle
+        this.highScoresBtn.addEventListener('click', () => {
+            let leaderboardDiv = document.getElementById('leaderboard');
+            if (leaderboardDiv) {
+                leaderboardDiv.style.display = leaderboardDiv.style.display === 'none' ? 'block' : 'none';
+            }
+        });
+
+        // Oyun Sonu Butonları
+        this.restartBtn.addEventListener('click', () => {
+            this.startGame();
+        });
+
+        this.menuBtn.addEventListener('click', () => {
+            this.gameOverScreen.style.display = 'none';
+            this.mainMenu.style.display = 'flex';
+            this.canvas.style.display = 'none';
+            this.uiContainer.style.display = 'none';
+            this.gameState = 'MENU';
+            let leaderboardDiv = document.getElementById('leaderboard');
+            if (leaderboardDiv) leaderboardDiv.style.display = 'none';
+        });
+    }
+
+    startGame() {
+        this.mainMenu.style.display = 'none';
+        this.gameOverScreen.style.display = 'none';
+        this.canvas.style.display = 'block';
+        this.uiContainer.style.display = 'flex';
+        
+        let leaderboardDiv = document.getElementById('leaderboard');
+        if (leaderboardDiv) leaderboardDiv.style.display = 'none';
+
+        this.resetGame();
+    }
+
+    resetGame() {
+        this.launcherX = this.worldSize/2;
+        this.launcherY = this.worldSize/2;
+        this.ucak = new Ucak(this.launcherX + 2000, this.launcherY - 2000);
+        this.fuze = new Fuze(this.launcherX, this.launcherY);
+        
+        this.gameState = 'LAUNCHING'; 
+        this.shakeTime = 0;
+        this.startTime = performance.now();
+        this.proximityWarning = false;
+        
+        this.uiStatus.innerText = "DURUM: FIRLATILIYOR...";
+        this.uiStatus.style.color = "#ff0";
+    }
+
+    updateCamera() {
+        this.camera.x = this.fuze.x - this.canvas.width / 2;
+        this.camera.y = this.fuze.y - this.canvas.height / 2;
+    }
+
+    checkCollisions() {
+        if (this.gameState !== 'PLAYING') return;
+
+        let dx = this.fuze.x - this.ucak.x;
+        let dy = this.fuze.y - this.ucak.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+
+        this.proximityWarning = (dist < 800 && this.fuze.state === 'ACTIVE');
+
+        if (dist < 30) { 
+            this.fuze.state = 'HIT';
+            this.gameState = 'WON';
+            this.shakeTime = 0.8; 
+            this.calculateAndSaveScore();
+            this.showGameOverScreen(true);
+        } 
+        else if (this.fuze.state === 'MISSED') {
+            this.gameState = 'LOST';
+            this.uiStatus.innerText = "DURUM: ISKALADI (HIZ KAYBI)";
+            this.uiStatus.style.color = "#f00";
+            this.showGameOverScreen(false);
+        }
+    }
+
+    showGameOverScreen(isWin) {
+        setTimeout(() => {
+            this.gameOverScreen.style.display = 'flex';
+            this.canvas.style.display = 'none';
+            this.uiContainer.style.display = 'none';
+            
+            if (isWin) {
+                this.gameOverTitle.innerText = "HEDEF İMHA EDİLDİ!";
+                this.gameOverTitle.style.color = "#0af";
+                this.gameOverTitle.style.textShadow = "0 0 15px #0af";
+            } else {
+                this.gameOverTitle.innerText = "GÖREV BAŞARISIZ!";
+                this.gameOverTitle.style.color = "#f00";
+                this.gameOverTitle.style.textShadow = "0 0 15px #f00";
+                this.finalScore.innerText = "SKOR: 0";
+            }
+        }, 1500); // 1.5 saniye sonra göster (patlama efektini görmek için)
+    }
+
+    calculateAndSaveScore() {
+        let timeTaken = (performance.now() - this.startTime) / 1000;
+        let energyLeft = (this.fuze.boostTime / this.fuze.maxBoostTime);
+        
+        let difficultyMultiplier = 1.5;
+        let score = Math.floor((10000 / timeTaken) * Math.max(0.1, energyLeft) * difficultyMultiplier);
+        if (score < 0) score = 0;
+
+        this.uiStatus.innerText = "DURUM: HEDEF VURULDU!";
+        this.uiStatus.style.color = "#0af";
+        this.uiScore.innerText = `SKOR: ${score}`;
+        this.finalScore.innerText = `SKOR: ${score}`;
+
+        this.saveScore(score);
+    }
+
+    saveScore(newScore) {
+        let scores = JSON.parse(localStorage.getItem('interceptorTopScores')) || [];
+        scores.push({
+            name: this.playerName || "Bilinmeyen Pilot",
+            score: newScore, 
+            date: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
+        });
+        scores.sort((a, b) => b.score - a.score); 
+        scores = scores.slice(0, 5); 
+        localStorage.setItem('interceptorTopScores', JSON.stringify(scores));
+        this.showLeaderboard();
+    }
+
+    showLeaderboard() {
+        let scores = JSON.parse(localStorage.getItem('interceptorTopScores')) || [];
+        let leaderboardDiv = document.getElementById('leaderboard');
+        if (!leaderboardDiv) {
+            leaderboardDiv = document.createElement('div');
+            leaderboardDiv.id = 'leaderboard';
+            leaderboardDiv.style.position = 'absolute';
+            leaderboardDiv.style.top = '70px';
+            leaderboardDiv.style.right = '20px';
+            leaderboardDiv.style.color = '#0af';
+            leaderboardDiv.style.fontFamily = 'Courier New';
+            leaderboardDiv.style.background = 'rgba(0,10,30,0.8)';
+            leaderboardDiv.style.padding = '10px';
+            leaderboardDiv.style.border = '1px solid #0af';
+            leaderboardDiv.style.zIndex = '10';
+            leaderboardDiv.style.display = 'none'; // Başlangıçta gizli
+            document.body.appendChild(leaderboardDiv);
+        }
+
+        let html = '<h3 style="margin-top:0; text-align:center; border-bottom:1px solid #0af; padding-bottom:5px;">EN İYİ 5 SKOR</h3><ol style="padding-left: 20px; margin-bottom:0;">';
+        if (scores.length === 0) {
+            html += '<li>Henüz skor yok</li>';
+        } else {
+            scores.forEach(s => {
+                let name = s.name ? s.name : "Pilot";
+                html += `<li style="margin-bottom: 8px;"><strong>${name}</strong>: ${s.score} Puan <br><small style="color:#08c">${s.date}</small></li>`;
+            });
+        }
+        html += '</ol>';
+        leaderboardDiv.innerHTML = html;
+    }
+
+    updateUI() {
+        if (this.gameState === 'PLAYING' || this.gameState === 'LAUNCHING') {
+            if (this.gameState === 'LAUNCHING') {
+                this.uiStatus.innerText = "DURUM: FIRLATILIYOR...";
+                this.uiStatus.style.color = "#ff0";
+            } else if (this.proximityWarning) {
+                this.uiStatus.innerText = "DURUM: YAKIN TEMAS UYARISI!";
+                this.uiStatus.style.color = "#ff0";
+            } else if (this.ucak && this.ucak.isEvading) {
+                this.uiStatus.innerText = `DURUM: HEDEF MANEVRA YAPIYOR (${this.ucak.evasionType})`;
+                this.uiStatus.style.color = "#f80";
+            } else {
+                this.uiStatus.innerText = "DURUM: TAKİPTE";
+                this.uiStatus.style.color = "#0af";
+            }
+        }
+        if (this.fuze) {
+            this.uiSpeed.innerText = `FÜZE HIZI: ${Math.floor(this.fuze.speed)} px/s`;
+            
+            let boostPercent = Math.max(0, Math.floor((this.fuze.boostTime / this.fuze.maxBoostTime) * 100));
+            this.uiBoost.innerText = `MOTOR: %${boostPercent}`;
+            if (boostPercent === 0) this.uiBoost.style.color = "#f00";
+            else this.uiBoost.style.color = "#0af";
+        }
+    }
+
+    drawOffscreenIndicator(ctx) {
+        if (this.gameState !== 'PLAYING' && this.gameState !== 'LAUNCHING') return;
+
+        let screenX = this.ucak.x - this.camera.x;
+        let screenY = this.ucak.y - this.camera.y;
+
+        if (screenX < 0 || screenX > this.canvas.width || screenY < 0 || screenY > this.canvas.height) {
+            let centerX = this.canvas.width / 2;
+            let centerY = this.canvas.height / 2;
+            
+            let angle = Math.atan2(screenY - centerY, screenX - centerX);
+            
+            let radius = Math.min(this.canvas.width, this.canvas.height) / 2 - 40;
+            let indicatorX = centerX + Math.cos(angle) * radius;
+            let indicatorY = centerY + Math.sin(angle) * radius;
+
+            ctx.save();
+            ctx.translate(indicatorX, indicatorY);
+            ctx.rotate(angle);
+            
+            ctx.beginPath();
+            ctx.moveTo(15, 0);
+            ctx.lineTo(-10, 10);
+            ctx.lineTo(-10, -10);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255, 0, 0, 0.7)";
+            ctx.fill();
+            ctx.strokeStyle = "#f00";
+            ctx.stroke();
+            
+            ctx.rotate(-angle); 
+            let dist = Math.floor(Math.sqrt(Math.pow(this.ucak.x - this.fuze.x, 2) + Math.pow(this.ucak.y - this.fuze.y, 2)));
+            ctx.fillStyle = "#f00";
+            ctx.font = "12px Courier New";
+            ctx.textAlign = "center";
+            ctx.fillText(`${dist}m`, 0, 25);
+            
+            ctx.restore();
+        }
+    }
+
+    // --- YENİ: RADAR SİSTEMİ ---
+    drawRadar(ctx, dt) {
+        const radarRadius = 100; 
+        // Radar konumunu canvas'ın sağ alt köşesine sabitle
+        const radarX = this.canvas.width - radarRadius - 20; 
+        const radarY = this.canvas.height - radarRadius - 100; // Radarı yukarı kaldırmak için -20 yerine -100 yapıldı
+        const maxRange = 4000; // Radarın görebildiği max dünya mesafesi
+
+        ctx.save();
+        
+        // 1. Radar Arka Planı ve Çerçevesi
+        ctx.beginPath();
+        ctx.arc(radarX, radarY, radarRadius, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(0, 10, 30, 0.8)";
+        ctx.fill();
+        ctx.strokeStyle = "#0af";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 2. Mesafe Halkaları (Grid)
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(0, 170, 255, 0.3)";
+        for(let i=1; i<=3; i++) {
+            ctx.beginPath();
+            ctx.arc(radarX, radarY, radarRadius * (i/3), 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        // Çapraz Çizgiler
+        ctx.beginPath();
+        ctx.moveTo(radarX - radarRadius, radarY);
+        ctx.lineTo(radarX + radarRadius, radarY);
+        ctx.moveTo(radarX, radarY - radarRadius);
+        ctx.lineTo(radarX, radarY + radarRadius);
+        ctx.stroke();
+
+        // 3. Merkezdeki Füze (Oyuncu)
+        ctx.fillStyle = "#0af";
+        ctx.beginPath();
+        ctx.arc(radarX, radarY, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 4. Hedefin Konumu (Relative Positioning)
+        let dx = this.ucak.x - this.fuze.x;
+        let dy = this.ucak.y - this.fuze.y;
+        let distance = Math.sqrt(dx*dx + dy*dy);
+
+        // Hedef radar menzili içindeyse ve Flare (Parazit) aktif değilse net göster
+        if (distance < maxRange) {
+            let rX = radarX + (dx / maxRange) * radarRadius;
+            let rY = radarY + (dy / maxRange) * radarRadius;
+            
+            // Flare aktifse radarda parazit (noise) oluştur
+            if (this.ucak.flareActive) {
+                // Gerçek konum yerine rastgele sönük noktalar çiz
+                for(let i=0; i<5; i++) {
+                    let noiseX = rX + (Math.random()-0.5)*30;
+                    let noiseY = rY + (Math.random()-0.5)*30;
+                    // Radar dairesi dışına taşmasını engelle
+                    let distFromCenter = Math.sqrt(Math.pow(noiseX-radarX, 2) + Math.pow(noiseY-radarY, 2));
+                    if(distFromCenter <= radarRadius) {
+                        ctx.fillStyle = "rgba(255, 255, 0, 0.5)"; // Sarı parazit
+                        ctx.fillRect(noiseX, noiseY, 3, 3);
+                    }
+                }
+            } else {
+                // Normal Kırmızı Blip
+                ctx.fillStyle = "#f00";
+                ctx.beginPath();
+                ctx.arc(rX, rY, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Hedefin gidiş yönünü gösteren küçük bir vektör çizgisi
+                ctx.beginPath();
+                ctx.moveTo(rX, rY);
+                ctx.lineTo(rX + Math.cos(this.ucak.angle) * 10, rY + Math.sin(this.ucak.angle) * 10);
+                ctx.strokeStyle = "#f00";
+                ctx.stroke();
+            }
+        } else {
+            // Hedef menzil dışındaysa, radarın en dış çemberinde yönünü göster
+            let angleToTarget = Math.atan2(dy, dx);
+            let edgeX = radarX + Math.cos(angleToTarget) * (radarRadius - 5);
+            let edgeY = radarY + Math.sin(angleToTarget) * (radarRadius - 5);
+            
+            ctx.fillStyle = "rgba(255, 0, 0, 0.3)"; // Sönük kırmızı
+            ctx.beginPath();
+            ctx.arc(edgeX, edgeY, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 5. Radar Tarama Çizgisi (Sweep Effect)
+        this.radarAngle += dt * 2; // Dönüş hızı
+        if (this.radarAngle > Math.PI * 2) this.radarAngle -= Math.PI * 2;
+
+        ctx.beginPath();
+        ctx.moveTo(radarX, radarY);
+        ctx.lineTo(radarX + Math.cos(this.radarAngle) * radarRadius, radarY + Math.sin(this.radarAngle) * radarRadius);
+        ctx.strokeStyle = "rgba(0, 170, 255, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Tarama arkası gölge (Gradient)
+        ctx.beginPath();
+        ctx.moveTo(radarX, radarY);
+        ctx.arc(radarX, radarY, radarRadius, this.radarAngle - 0.5, this.radarAngle, false);
+        ctx.lineTo(radarX, radarY);
+        let gradient = ctx.createRadialGradient(radarX, radarY, 0, radarX, radarY, radarRadius);
+        gradient.addColorStop(0, "rgba(0, 170, 255, 0.2)");
+        gradient.addColorStop(1, "rgba(0, 170, 255, 0)");
+        ctx.fillStyle = gradient;
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    applyShake(ctx) {
+        if (this.shakeTime > 0) {
+            let intensity = this.shakeTime * 30;
+            let dx = (Math.random() - 0.5) * intensity;
+            let dy = (Math.random() - 0.5) * intensity;
+            ctx.translate(dx, dy);
+        }
+    }
+
+    loop(timestamp) {
+        let dt = (timestamp - this.lastTime) / 1000;
+        this.lastTime = timestamp;
+        
+        if (dt > 0.1) dt = 0.1;
+
+        if (this.shakeTime > 0) {
+            this.shakeTime -= dt;
+        }
+
+        if (this.gameState === 'PLAYING' || this.gameState === 'LAUNCHING') {
+            this.ucak.update(dt, this.fuze);
+            this.fuze.update(dt, this.ucak.speed);
+            this.updateCamera();
+            
+            if (this.gameState === 'PLAYING') {
+                this.checkCollisions();
+            }
+            
+            if (this.gameState === 'LAUNCHING' && !this.fuze.isLaunching) {
+                this.gameState = 'PLAYING';
+                this.uiStatus.innerText = "DURUM: SİSTEM AKTİF";
+                this.uiStatus.style.color = "#0af";
+            }
+        }
+
+        this.updateUI();
+
+        if (this.gameState === 'MENU') {
+            requestAnimationFrame((t) => this.loop(t));
+            return;
+        }
+
+        this.ctx.save();
+        
+        this.ctx.fillStyle = '#001122';
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        this.applyShake(this.ctx);
+
+        this.ctx.strokeStyle = 'rgba(0, 170, 255, 0.1)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        let gridSize = 100;
+        let offsetX = -(this.camera.x % gridSize);
+        let offsetY = -(this.camera.y % gridSize);
+
+        for(let i = offsetX; i < this.canvas.width; i += gridSize) {
+            this.ctx.moveTo(i, 0);
+            this.ctx.lineTo(i, this.canvas.height);
+        }
+        for(let i = offsetY; i < this.canvas.height; i += gridSize) {
+            this.ctx.moveTo(0, i);
+            this.ctx.lineTo(this.canvas.width, i);
+        }
+        this.ctx.stroke();
+
+        if (this.proximityWarning && Math.floor(timestamp / 100) % 2 === 0) {
+            this.ctx.fillStyle = 'rgba(255, 0, 0, 0.1)';
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        }
+
+        this.ctx.shadowBlur = 10;
+        this.ctx.shadowColor = '#0af';
+
+        if (this.gameState !== 'WON') {
+            this.ucak.draw(this.ctx, this.camera);
+        }
+        
+        // S-400 Fırlatıcı Çizimi
+        if (this.launcherX !== undefined) {
+            this.ctx.save();
+            this.ctx.translate(this.launcherX - this.camera.x, this.launcherY - this.camera.y);
+            this.ctx.drawImage(s400Img, -40, -40, 80, 80);
+            
+            // Fırlatma sırasında duman efekti
+            if (this.gameState === 'LAUNCHING') {
+                for(let i=0; i<5; i++) {
+                    this.ctx.beginPath();
+                    this.ctx.arc((Math.random()-0.5)*40, -20 + Math.random()*20, Math.random()*15+5, 0, Math.PI*2);
+                    this.ctx.fillStyle = `rgba(200, 200, 200, ${Math.random()*0.5})`;
+                    this.ctx.fill();
+                }
+            }
+            this.ctx.restore();
+        }
+
+        this.fuze.draw(this.ctx, this.camera);
+
+        this.drawOffscreenIndicator(this.ctx);
+
+        if (this.gameState === 'WON' && this.shakeTime > 0) {
+            this.ctx.beginPath();
+            this.ctx.arc(this.ucak.x - this.camera.x, this.ucak.y - this.camera.y, (0.8 - this.shakeTime) * 200, 0, Math.PI * 2);
+            this.ctx.fillStyle = "rgba(255, 100, 0, 0.8)";
+            this.ctx.fill();
+        }
+
+        if (this.gameState === 'WON' || this.gameState === 'LOST') {
+            this.ctx.fillStyle = "#0af";
+            this.ctx.font = "bold 24px Courier New";
+            this.ctx.textAlign = "center";
+            this.ctx.shadowBlur = 5;
+            this.ctx.fillText(this.gameState === 'WON' ? "HEDEF İMHA EDİLDİ!" : "GÖREV BAŞARISIZ!", this.canvas.width / 2, this.canvas.height / 2 - 30);
+            this.ctx.fillText("Devam etmek için tıklayın", this.canvas.width / 2, this.canvas.height / 2 + 20);
+        }
+
+        this.ctx.restore();
+
+        // Radarı en son çiz (Kamera sarsıntısından ve diğer efektlerden etkilenmemesi için UI katmanında)
+        if (this.gameState === 'PLAYING' || this.gameState === 'LAUNCHING') {
+            this.ctx.save();
+            this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+            this.drawRadar(this.ctx, dt);
+            this.ctx.restore();
+        }
+
+        requestAnimationFrame((t) => this.loop(t));
+    }
+}
+
+window.onload = () => {
+    new OyunMotoru();
+};
+    </script>
 </body>
 </html>
