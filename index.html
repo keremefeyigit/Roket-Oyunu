@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>The Interceptor - Radar Simülasyonu</title>
     <style>
@@ -858,10 +858,18 @@ class OyunMotoru {
     }
 
     saveScore(newScore) {
-        let scores = JSON.parse(localStorage.getItem('interceptorTopScores')) || [];
+        let scores = [];
+        try {
+            scores = JSON.parse(localStorage.getItem('interceptorTopScores')) || [];
+            if (!Array.isArray(scores)) scores = [];
+        } catch (e) {
+            scores = [];
+        }
+
+        const pilotName = String(this.playerName || "Bilinmeyen Pilot").trim().slice(0, 15);
         scores.push({
-            name: this.playerName || "Bilinmeyen Pilot",
-            score: newScore, 
+            name: pilotName,
+            score: typeof newScore === 'number' ? newScore : 0, 
             date: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
         });
         scores.sort((a, b) => b.score - a.score); 
@@ -871,7 +879,14 @@ class OyunMotoru {
     }
 
     showLeaderboard() {
-        let scores = JSON.parse(localStorage.getItem('interceptorTopScores')) || [];
+        let scores = [];
+        try {
+            scores = JSON.parse(localStorage.getItem('interceptorTopScores')) || [];
+            if (!Array.isArray(scores)) scores = [];
+        } catch (e) {
+            scores = [];
+        }
+
         let leaderboardDiv = document.getElementById('leaderboard');
         if (!leaderboardDiv) {
             leaderboardDiv = document.createElement('div');
@@ -889,17 +904,46 @@ class OyunMotoru {
             document.body.appendChild(leaderboardDiv);
         }
 
-        let html = '<h3 style="margin-top:0; text-align:center; border-bottom:1px solid #0af; padding-bottom:5px;">EN İYİ 5 SKOR</h3><ol style="padding-left: 20px; margin-bottom:0;">';
+        // Güvenli DOM temizliği (XSS koruması)
+        while (leaderboardDiv.firstChild) {
+            leaderboardDiv.removeChild(leaderboardDiv.firstChild);
+        }
+
+        const h3 = document.createElement('h3');
+        h3.style.cssText = 'margin-top:0; text-align:center; border-bottom:1px solid #0af; padding-bottom:5px;';
+        h3.textContent = 'EN İYİ 5 SKOR';
+        leaderboardDiv.appendChild(h3);
+
+        const ol = document.createElement('ol');
+        ol.style.cssText = 'padding-left: 20px; margin-bottom:0;';
+
         if (scores.length === 0) {
-            html += '<li>Henüz skor yok</li>';
+            const li = document.createElement('li');
+            li.textContent = 'Henüz skor yok';
+            ol.appendChild(li);
         } else {
             scores.forEach(s => {
-                let name = s.name ? s.name : "Pilot";
-                html += `<li style="margin-bottom: 8px;"><strong>${name}</strong>: ${s.score} Puan <br><small style="color:#08c">${s.date}</small></li>`;
+                const li = document.createElement('li');
+                li.style.marginBottom = '8px';
+
+                const strong = document.createElement('strong');
+                strong.textContent = String(s.name || "Pilot").slice(0, 15);
+
+                const scoreText = document.createTextNode(`: ${s.score} Puan `);
+                const br = document.createElement('br');
+
+                const small = document.createElement('small');
+                small.style.color = '#08c';
+                small.textContent = String(s.date || '');
+
+                li.appendChild(strong);
+                li.appendChild(scoreText);
+                li.appendChild(br);
+                li.appendChild(small);
+                ol.appendChild(li);
             });
         }
-        html += '</ol>';
-        leaderboardDiv.innerHTML = html;
+        leaderboardDiv.appendChild(ol);
     }
 
     updateUI() {
